@@ -54,7 +54,7 @@ func main() {
 	log.Infof("Version : %s", service.Version)
 
 	// Set CO Init params
-	clusterFlavor, err := csiconfig.GetClusterFlavor(ctx)
+	clusterFlavor, err := csiconfig.GetClusterFlavor(ctx) // TODO CnsClusterFlavorVanilla for testing
 	if err != nil {
 		log.Errorf("Failed retrieving cluster flavor. Error: %v", err)
 	}

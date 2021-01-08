@@ -19,12 +19,12 @@ export DIST_OUT ?= $(BUILD_OUT)/dist
 ##                             VERIFY GO VERSION                              ##
 ################################################################################
 # Go 1.13 required for Go modules.
-GO_VERSION_EXP := "go1.13"
-GO_VERSION_ACT := $(shell a="$$(go version | awk '{print $$3}')" && test $$(printf '%s\n%s' "$${a}" "$(GO_VERSION_EXP)" | sort | tail -n 1) = "$${a}" && printf '%s' "$${a}")
-ifndef GO_VERSION_ACT
-$(error Requires Go $(GO_VERSION_EXP)+ for Go module support)
-endif
-MOD_NAME := $(shell head -n 1 <go.mod | awk '{print $$2}')
+#GO_VERSION_EXP := "go1.13"
+#GO_VERSION_ACT := $(shell a="$$(go version | awk '{print $$3}')" && test $$(printf '%s\n%s' "$${a}" "$(GO_VERSION_EXP)" | sort | tail -n 1) = "$${a}" && printf '%s' "$${a}")
+#ifndef GO_VERSION_ACT
+#$(error Requires Go $(GO_VERSION_EXP)+ for Go module support)
+#endif
+#MOD_NAME := $(shell head -n 1 <go.mod | awk '{print $$2}')
 
 ################################################################################
 ##                             VERIFY BUILD PATH                              ##
@@ -74,7 +74,7 @@ build-dirs:
 ##                              BUILD BINARIES                                ##
 ################################################################################
 # Unless otherwise specified the binaries should be built for linux-amd64.
-GOOS ?= linux
+GOOS ?= windows
 GOARCH ?= amd64
 
 LDFLAGS := $(shell cat hack/make/ldflags.txt)

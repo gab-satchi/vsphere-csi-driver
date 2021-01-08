@@ -10,7 +10,7 @@ coverage_report.out
 /pkg/syncer/test_vsphere.conf
 
 # Ignore the build output.
-/.build
+/build
 
 # Ingore project specific setting files created by Intellij IDE and VS Code
 /.idea

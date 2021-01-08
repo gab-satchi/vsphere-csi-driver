@@ -110,27 +110,38 @@ function build_images() {
       ;;
   esac
 
-  echo "building ${CSI_IMAGE_NAME}:${VERSION}"
+#  echo "building ${CSI_IMAGE_NAME}:${VERSION}"
+#  echo "GOPROXY=${GOPROXY}"
+#  docker build \
+#    -f images/driver/Dockerfile \
+#    -t "${CSI_IMAGE_NAME}":"${VERSION}" \
+#    --build-arg "VERSION=${VERSION}" \
+#    --build-arg "GOPROXY=${GOPROXY}" \
+    .
+
+  echo "building ${CSI_IMAGE_NAME}-windows:${VERSION}"
   echo "GOPROXY=${GOPROXY}"
   docker build \
-    -f images/driver/Dockerfile \
-    -t "${CSI_IMAGE_NAME}":"${VERSION}" \
+    -f images/windows/driver/Dockerfile \
+    -t "${CSI_IMAGE_NAME}-windows":"${VERSION}" \
     --build-arg "VERSION=${VERSION}" \
     --build-arg "GOPROXY=${GOPROXY}" \
     .
 
-  echo "building ${SYNCER_IMAGE_NAME}:${VERSION}"
-  docker build \
-      -f images/syncer/Dockerfile \
-      -t "${SYNCER_IMAGE_NAME}":"${VERSION}" \
-      --build-arg "VERSION=${VERSION}" \
-      --build-arg "GOPROXY=${GOPROXY}" \
+#  echo "building ${SYNCER_IMAGE_NAME}:${VERSION}"
+#  docker build \
+#      -f images/syncer/Dockerfile \
+#      -t "${SYNCER_IMAGE_NAME}":"${VERSION}" \
+#      --build-arg "VERSION=${VERSION}" \
+#      --build-arg "GOPROXY=${GOPROXY}" \
       .
   if [ "${LATEST}" ]; then
-    echo "tagging image ${CSI_IMAGE_NAME}:${VERSION} as latest"
-    docker tag "${CSI_IMAGE_NAME}":"${VERSION}" "${CSI_IMAGE_NAME}":latest
-    echo "tagging image ${SYNCER_IMAGE_NAME}:${VERSION} as latest"
-    docker tag "${SYNCER_IMAGE_NAME}":"${VERSION}" "${SYNCER_IMAGE_NAME}":latest
+#    echo "tagging image ${CSI_IMAGE_NAME}:${VERSION} as latest"
+#    docker tag "${CSI_IMAGE_NAME}":"${VERSION}" "${CSI_IMAGE_NAME}":latest
+    echo "tagging image ${CSI_IMAGE_NAME}-windows:${VERSION} as latest"
+    docker tag "${CSI_IMAGE_NAME}-windows":"${VERSION}" "${CSI_IMAGE_NAME}-windows":latest
+#    echo "tagging image ${SYNCER_IMAGE_NAME}:${VERSION} as latest"
+#    docker tag "${SYNCER_IMAGE_NAME}":"${VERSION}" "${SYNCER_IMAGE_NAME}":latest
 
   fi
 }
