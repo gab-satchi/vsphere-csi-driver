@@ -74,7 +74,7 @@ build-dirs:
 ##                              BUILD BINARIES                                ##
 ################################################################################
 # Unless otherwise specified the binaries should be built for linux-amd64.
-GOOS ?= linux
+GOOS ?= windows
 GOARCH ?= amd64
 
 LDFLAGS := $(shell cat hack/make/ldflags.txt)
