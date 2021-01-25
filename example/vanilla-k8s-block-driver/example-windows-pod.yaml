@@ -12,8 +12,7 @@ spec:
         - pwsh
       args:
         - -command
-        - while ($true) { sleep 10 }
-        - echo 'hello' > /mnt/volume1
+        - mkdir /mnt/volume1/test && echo 'hello' > /mnt/volume1/test/index
       volumeMounts:
         - name: test-volume
           mountPath: /mnt/volume1
