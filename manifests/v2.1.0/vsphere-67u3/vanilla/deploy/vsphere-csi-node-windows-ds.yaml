@@ -1,0 +1,134 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: vsphere-csi-node-windows
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: vsphere-csi-node-windows
+  template:
+    metadata:
+      labels:
+        app: vsphere-csi-node-windows
+        role: vsphere-csi-windows
+    spec:
+      nodeSelector:
+        kubernetes.io/os: windows
+      containers:
+        - args:
+            - --v=5
+            - --csi-address=$(ADDRESS)
+            - --kubelet-registration-path=$(DRIVER_REG_SOCK_PATH)
+          env:
+            - name: ADDRESS
+              value: unix://C:\\csi\\csi.sock
+            - name: DRIVER_REG_SOCK_PATH
+              value: C:\\var\\lib\\kubelet\\plugins\\csi.vsphere.vmware.com\\csi.sock
+          image: k8s.gcr.io/sig-storage/csi-node-driver-registrar:v2.1.0
+          name: node-driver-registrar
+          resources: {}
+          volumeMounts:
+            - mountPath: /csi
+              name: plugin-dir
+            - mountPath: /registration
+              name: registration-dir
+        - env:
+            - name: CSI_ENDPOINT
+              value: unix://C:\\csi\\csi.sock
+            - name: X_CSI_MODE
+              value: node
+            - name: X_CSI_SPEC_REQ_VALIDATION
+              value: "false"
+            - name: VSPHERE_CSI_CONFIG
+              value: /etc/cloud/csi-vsphere.conf
+            - name: LOGGER_LEVEL
+              value: DEVELOPMENT
+            - name: X_CSI_LOG_LEVEL
+              value: DEBUG
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          image: gcr.io/cf-london-servces-k8s/gs/csi-driver:latest
+          imagePullPolicy: Always
+#          livenessProbe:
+#            failureThreshold: 3
+#            httpGet:
+#              path: /healthz
+#              port: healthz
+#            initialDelaySeconds: 10
+#            periodSeconds: 5
+#            timeoutSeconds: 3
+          name: vsphere-csi-node
+          ports:
+            - containerPort: 9808
+              name: healthz
+              protocol: TCP
+          resources: {}
+          securityContext:
+            allowPrivilegeEscalation: true
+            capabilities:
+              add:
+                - SYS_ADMIN
+            privileged: true
+          volumeMounts:
+            - mountPath: /etc/cloud
+              name: vsphere-config-volume
+            - mountPath: /csi
+              name: plugin-dir
+            - mountPath: /var/lib/kubelet
+              mountPropagation: Bidirectional
+              name: pods-mount-dir
+            - name: csi-proxy-disk-pipe
+              mountPath: \\.\pipe\csi-proxy-disk-v1beta2
+            - name: csi-proxy-filesystem-pipe
+              mountPath: \\.\pipe\csi-proxy-filesystem-v1beta1
+            - name: csi-proxy-volume-pipe
+              mountPath: \\.\pipe\csi-proxy-volume-v1beta2
+#            - mountPath: /dev
+#              name: device-dir
+#        - args:
+#            - --csi-address=/csi/csi.sock
+#          image: quay.io/k8scsi/livenessprobe:v1.1.0
+#          name: liveness-probe
+#          resources: {}
+#          volumeMounts:
+#            - mountPath: /csi
+#              name: plugin-dir
+      dnsPolicy: Default
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
+      volumes:
+        - name: vsphere-config-volume
+          secret:
+            secretName: csi-vsphere-config
+        - hostPath:
+            path: C:\var\lib\kubelet\plugins_registry\
+            type: Directory
+          name: registration-dir
+        - hostPath:
+            path: C:\var\lib\kubelet\plugins\csi.vsphere.vmware.com\
+            type: DirectoryOrCreate
+          name: plugin-dir
+        - hostPath:
+            path: /var/lib/kubelet
+            type: Directory
+          name: pods-mount-dir
+        - name: csi-proxy-disk-pipe
+          hostPath:
+            path: \\.\pipe\csi-proxy-disk-v1beta2
+            type: null
+        - name: csi-proxy-filesystem-pipe
+          hostPath:
+            path: \\.\pipe\csi-proxy-filesystem-v1beta1
+            type: null
+        - name: csi-proxy-volume-pipe
+          hostPath:
+            path: \\.\pipe\csi-proxy-volume-v1beta2
+            type: null
+  updateStrategy:
+    type: RollingUpdate
