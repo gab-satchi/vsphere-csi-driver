@@ -84,6 +84,212 @@ func (s *service) NodePublishVolume(
 	return publishFileVol(ctx, req, params)
 }
 
+func (s *service) NodeUnpublishVolume(
+	ctx context.Context,
+	req *csi.NodeUnpublishVolumeRequest) (
+	*csi.NodeUnpublishVolumeResponse, error) {
+	ctx = logger.NewContextWithLogger(ctx)
+	log := logger.GetLogger(ctx)
+	log.Infof("NodeUnpublishVolume: called with args %+v", *req)
+
+	volID := req.GetVolumeId()
+	target := req.GetTargetPath()
+
+	// Verify if the path exists
+	// NOTE: For raw block volumes, this path is a file. In all other cases, it is a directory
+	_, err := os.Stat(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// target path does not exist, so we must be Unpublished
+			log.Infof("NodeUnpublishVolume: Target path %q does not exist. Assuming NodeUnpublish is complete", target)
+			return &csi.NodeUnpublishVolumeResponse{}, nil
+		}
+		return nil, status.Errorf(codes.Internal,
+			"failed to stat target %q, err: %v", target, err)
+	}
+
+	// Fetch all the mount points
+	mnts, err := gofsutil.GetMounts(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"could not retrieve existing mount points: %q",
+			err.Error())
+	}
+	log.Debugf("NodeUnpublishVolume: node mounts %+v", mnts)
+
+	// Check if the volume is already unpublished
+	// Also validates if path is a mounted directory or not
+	isPresent := common.IsTargetInMounts(ctx, target, mnts)
+	if !isPresent {
+		log.Infof("NodeUnpublishVolume: Target %s not present in mount points. Assuming it is already unpublished.", target)
+		return &csi.NodeUnpublishVolumeResponse{}, nil
+	}
+
+	// Figure out if the target path is a file or block volume
+	isFileMount, _ := common.IsFileVolumeMount(ctx, target, mnts)
+	isPublished := true
+	if !isFileMount {
+		isPublished, err = isBlockVolumePublished(ctx, volID, target)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if isPublished {
+		log.Infof("NodeUnpublishVolume: Attempting to unmount target %q for volume %q", target, volID)
+		if err := gofsutil.Unmount(ctx, target); err != nil {
+			msg := fmt.Sprintf("Error unmounting target %q for volume %q. %q", target, volID, err.Error())
+			log.Debug(msg)
+			return nil, status.Error(codes.Internal, msg)
+		}
+		log.Debugf("Unmount successful for target %q for volume %q", target, volID)
+		// TODO Use a go routine here. The deletion of target path might not be a good reason to error out
+		// The SP is supposed to delete the files/directory it created in this target path
+		if err := rmpath(ctx, target); err != nil {
+			log.Debugf("failed to delete the target path %q", target)
+			return nil, err
+		}
+		log.Debugf("Target path  %q successfully deleted", target)
+	}
+	log.Infof("NodeUnpublishVolume successful for volume %q", volID)
+
+	return &csi.NodeUnpublishVolumeResponse{}, nil
+}
+
+func (s *service) NodeUnstageVolume(
+	ctx context.Context,
+	req *csi.NodeUnstageVolumeRequest) (
+	*csi.NodeUnstageVolumeResponse, error) {
+	ctx = logger.NewContextWithLogger(ctx)
+	log := logger.GetLogger(ctx)
+	log.Infof("NodeUnstageVolume: called with args %+v", *req)
+
+	stagingTarget := req.GetStagingTargetPath()
+	// Fetch all the mount points
+	mnts, err := gofsutil.GetMounts(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"could not retrieve existing mount points: %v", err)
+	}
+	log.Debugf("NodeUnstageVolume: node mounts %+v", mnts)
+	// Figure out if the target path is present in mounts or not - Unstage is not required for file volumes
+	targetFound := common.IsTargetInMounts(ctx, stagingTarget, mnts)
+	if !targetFound {
+		log.Infof("NodeUnstageVolume: Target path %q is not mounted. Skipping unstage.", stagingTarget)
+		return &csi.NodeUnstageVolumeResponse{}, nil
+	}
+
+	volID := req.GetVolumeId()
+	dirExists, err := verifyTargetDir(ctx, stagingTarget, false)
+	if err != nil {
+		return nil, err
+	}
+	// This will take care of idempotent requests
+	if !dirExists {
+		log.Infof("NodeUnstageVolume: Target path %q does not exist. Assuming unstage is complete.", stagingTarget)
+		return &csi.NodeUnstageVolumeResponse{}, nil
+	}
+
+	// Block volume
+	isMounted, err := isBlockVolumeMounted(ctx, volID, stagingTarget)
+	if err != nil {
+		return nil, err
+	}
+
+	// Volume is still mounted. Unstage the volume
+	if isMounted {
+		log.Infof("Attempting to unmount target %q for volume %q", stagingTarget, volID)
+		if err := gofsutil.Unmount(ctx, stagingTarget); err != nil {
+			return nil, status.Errorf(codes.Internal,
+				"Error unmounting stagingTarget: %v", err)
+		}
+	}
+	log.Infof("NodeUnstageVolume successful for target %q for volume %q", stagingTarget, volID)
+
+	return &csi.NodeUnstageVolumeResponse{}, nil
+}
+
+//isBlockVolumeMounted checks if the block volume is properly mounted or not.
+//If yes, then the calling function proceeds to unmount the volume
+func isBlockVolumeMounted(
+	ctx context.Context,
+	volID string,
+	stagingTargetPath string) (
+	bool, error) {
+
+	log := logger.GetLogger(ctx)
+	// Look up block device mounted to target
+	// BlockVolume: Here we are relying on the fact that the CO is required to
+	// have created the staging path per the spec, even for BlockVolumes. Even
+	// though we don't use the staging path for block, the fact nothing will be
+	// mounted still indicates that unstaging is done.
+	dev, err := getDevFromMount(stagingTargetPath)
+	if err != nil {
+		return false, status.Errorf(codes.Internal,
+			"isBlockVolumeMounted: error getting block device for volume: %s, err: %s",
+			volID, err.Error())
+	}
+
+	// No device found
+	if dev == nil {
+		// Nothing is mounted, so unstaging is already done
+		log.Debugf("isBlockVolumeMounted: No device found. Assuming Unstage is "+
+			"already done for volume %q and target path %q", volID, stagingTargetPath)
+		// For raw block volumes, we do not get a device attached to the stagingTargetPath. This path is just a dummy.
+		return false, nil
+	}
+	log.Debugf("found device: volID: %q, path: %q, block: %q, target: %q", volID, dev.FullPath, dev.RealDev, stagingTargetPath)
+
+	// Get mounts for device
+	mnts, err := gofsutil.GetDevMounts(ctx, dev.RealDev)
+	if err != nil {
+		return false, status.Errorf(codes.Internal,
+			"isBlockVolumeMounted: could not reliably determine existing mount status: %s",
+			err.Error())
+	}
+
+	// device is mounted more than once. Should only be mounted to target
+	if len(mnts) > 1 {
+		return false, status.Errorf(codes.Internal,
+			"isBlockVolumeMounted: volume: %s appears mounted in multiple places", volID)
+	}
+
+	// Since we looked up the block volume from the target path, we assume that
+	// the one existing mount is from the block to the target
+	log.Debugf("isBlockVolumeMounted: Found single mount point for volume %q and target %q",
+		volID, stagingTargetPath)
+	return true, nil
+}
+
+// isBlockVolumePublished checks if the device backing block volume exists.
+func isBlockVolumePublished(ctx context.Context, volID string, target string) (bool, error) {
+	ctx = logger.NewContextWithLogger(ctx)
+	log := logger.GetLogger(ctx)
+
+	// Look up block device mounted to target
+	dev, err := getDevFromMount(target)
+	if err != nil {
+		return false, status.Errorf(codes.Internal,
+			"error getting block device for volume: %s, err: %v",
+			volID, err)
+	}
+
+	if dev == nil {
+		// Nothing is mounted, so unpublish is already done. However, we also know
+		// that the target path exists, and it is our job to remove it.
+		log.Debugf("isBlockVolumePublished: No device found. Assuming Unpublish is "+
+			"already complete for volume %q and target path %q", volID, target)
+		if err := rmpath(ctx, target); err != nil {
+			msg := fmt.Sprintf("Failed to delete the target path %q. Error: %v", target, err)
+			log.Debug(msg)
+			return false, status.Errorf(codes.Internal, msg)
+		}
+		log.Debugf("isBlockVolumePublished: Target path %q successfully deleted", target)
+		return false, nil
+	}
+	return true, nil
+}
+
 func nodeStageBlockVolume(
 	ctx context.Context,
 	req *csi.NodeStageVolumeRequest,

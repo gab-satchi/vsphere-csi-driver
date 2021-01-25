@@ -36,6 +36,7 @@ import (
 	"os"
 	"path/filepath"
 	"sigs.k8s.io/vsphere-csi-driver/pkg/csi/service/logger"
+	"strconv"
 )
 
 func (s *service) NodePublishVolume(
@@ -53,10 +54,10 @@ func (s *service) NodePublishVolume(
 	}
 
 	if params.stagingTarget == "" {
-		return nil, status.Errorf(codes.FailedPrecondition, "staging target path %q not set", params.stagingTarget)
+		return nil, status.Error(codes.FailedPrecondition, "staging target path not set")
 	}
 	if params.target == "" {
-		return nil, status.Errorf(codes.FailedPrecondition, "target path %q not set", params.target)
+		return nil, status.Error(codes.FailedPrecondition, "target path not set")
 	}
 
 
@@ -83,6 +84,135 @@ func (s *service) NodePublishVolume(
 	}
 
 	return &csi.NodePublishVolumeResponse{}, nil
+}
+
+func (s *service) NodeUnpublishVolume(
+	ctx context.Context,
+	req *csi.NodeUnpublishVolumeRequest) (
+	*csi.NodeUnpublishVolumeResponse, error) {
+	ctx = logger.NewContextWithLogger(ctx)
+	log := logger.GetLogger(ctx)
+	log.Infof("NodeUnpublishVolume: called with args %+v", *req)
+
+	volID := req.GetVolumeId()
+	target := req.GetTargetPath()
+
+	if volID == "" {
+		return nil, status.Error(codes.FailedPrecondition, "volume ID not set")
+	}
+	if target == "" {
+		return nil, status.Error(codes.FailedPrecondition, "target path not set")
+	}
+
+	filesystemClient, err := filesystemclient.NewClient()
+	if err != nil {
+		return nil, err
+	}
+
+	rmdirRequest := &filesystemapi.RmdirRequest{
+		Path: mount.NormalizeWindowsPath(target),
+		Context: filesystemapi.PathContext_POD,
+		Force:   true,
+	}
+	_, err = filesystemClient.Rmdir(context.Background(), rmdirRequest)
+
+	if err != nil {
+		return nil, err
+	}
+	return &csi.NodeUnpublishVolumeResponse{}, nil
+}
+
+func (s *service) NodeUnstageVolume(
+	ctx context.Context,
+	req *csi.NodeUnstageVolumeRequest) (
+	*csi.NodeUnstageVolumeResponse, error) {
+	ctx = logger.NewContextWithLogger(ctx)
+	log := logger.GetLogger(ctx)
+	log.Infof("NodeUnstageVolume: called with args %+v", *req)
+
+	stagingTarget := req.GetStagingTargetPath()
+
+	err := dismountVolume(ctx, stagingTarget)
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to dismount volume")
+	}
+
+	return &csi.NodeUnstageVolumeResponse{}, nil
+}
+
+func dismountVolume(ctx context.Context, target string) error {
+	fsClient, err := filesystemclient.NewClient()
+	if err != nil {
+		return err
+	}
+	volumeClient, err := volumeclient.NewClient()
+	if err != nil {
+		return err
+	}
+	diskClient, err := diskclient.NewClient()
+	if err != nil {
+		return err
+	}
+	log := logger.GetLogger(ctx)
+	path := mount.NormalizeWindowsPath(target)
+	//	check path exists
+	fsPathReq := &filesystemapi.PathExistsRequest{Path: path}
+	fsPathResp, err := fsClient.PathExists(context.Background(), fsPathReq)
+	if err != nil {
+		return err
+	}
+	if !fsPathResp.Exists {
+		return nil
+	}
+	// csiproxy get volumeID from path
+	volIDReq := &volumeapi.VolumeIDFromMountRequest{Mount: target}
+	volIDResp, err := volumeClient.GetVolumeIDFromMount(context.Background(), volIDReq)
+	if err != nil {
+		return err
+	}
+	volumeID := volIDResp.VolumeId
+
+	// csiproxy dismount volume
+	dismountReq := &volumeapi.DismountVolumeRequest{
+		Path: path,
+		VolumeId: volumeID,
+	}
+	_, err = volumeClient.DismountVolume(context.Background(), dismountReq)
+	if err != nil {
+		return err
+	}
+
+	// csiproxy rmdir
+	rmDirReq := &filesystemapi.RmdirRequest{
+		Path: path,
+		Context: filesystemapi.PathContext_PLUGIN,
+		Force: true,
+	}
+	_, err = fsClient.Rmdir(context.Background(), rmDirReq)
+	if err != nil {
+		return err
+	}
+
+	// csiproxy getdisknumber
+	getDiskNumberReq := &volumeapi.VolumeDiskNumberRequest{
+		VolumeId: volumeID,
+	}
+	getDiskNumberResp, err := volumeClient.GetVolumeDiskNumber(context.Background(), getDiskNumberReq)
+	if err != nil {
+		return err
+	}
+	// csiproxy setattachstate
+	log.Infof("setting disk number %d to offline", getDiskNumberResp.DiskNumber)
+	attachStateReq := &diskapi.SetAttachStateRequest{
+		DiskID: strconv.FormatInt(getDiskNumberResp.DiskNumber, 10),
+		IsOnline: false,
+	}
+	_, err = diskClient.SetAttachState(context.Background(), attachStateReq)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func publishMountVol(ctx context.Context, params nodePublishParams) error {
@@ -123,8 +253,6 @@ func publishMountVol(ctx context.Context, params nodePublishParams) error {
 	return nil
 }
 
-
-
 func nodeStageBlockVolume(
 	ctx context.Context,
 	req *csi.NodeStageVolumeRequest,
@@ -140,9 +268,6 @@ func nodeStageBlockVolume(
 	if err != nil {
 		return nil, err
 	}
-
-	log.Infof("NodeStageVolume Windows called",
-		params.volID, pubCtx, diskID)
 
 	diskNumber, err := getDiskNumber(ctx, diskID)
 	if err != nil {
@@ -174,7 +299,7 @@ func nodeStageBlockVolume(
 		return nil, errors.Wrap(err, "unable to mount volume")
 	}
 
-	return nil, nil
+	return &csi.NodeStageVolumeResponse{}, nil
 }
 
 func formatAndMount(ctx context.Context, path string, diskNum string) error {
@@ -184,13 +309,13 @@ func formatAndMount(ctx context.Context, path string, diskNum string) error {
 	if err != nil {
 		return err
 	}
-
 	volumeClient, err := volumeclient.NewClient()
 	if err != nil {
 		return err
 	}
 
 	// partition disk
+	log.Infof("partitioning disk %s", diskNum)
 	partitionRequest := &diskapi.PartitionDiskRequest{DiskID: diskNum}
 	_, err = diskClient.PartitionDisk(context.Background(), partitionRequest)
 	if err != nil {
@@ -198,6 +323,7 @@ func formatAndMount(ctx context.Context, path string, diskNum string) error {
 	}
 
 	// ensure disk is online
+	log.Infof("setting disk %s to online", diskNum)
 	attachRequest := &diskapi.SetAttachStateRequest{
 		DiskID:   diskNum,
 		IsOnline: true,
@@ -227,6 +353,7 @@ func formatAndMount(ctx context.Context, path string, diskNum string) error {
 	}
 	if !volumeFormattedResponse.Formatted {
 		// format volume
+		log.Infof("formatting volume")
 		formatVolumeRequest := &volumeapi.FormatVolumeRequest{VolumeId: volID}
 		_, err = volumeClient.FormatVolume(context.Background(), formatVolumeRequest)
 		if err != nil {
